@@ -1,0 +1,33 @@
+# 資料集與前處理輸出（LIDC-IDRI 使用條款不允許再散布，且體積過大）
+*.dcm
+*.png
+*.jpg
+manifest.csv
+nodules.csv
+split.json
+
+# 訓練輸出與模型權重
+runs/
+*.pt
+*.pth
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# 環境
+.venv/
+venv/
+.env
+
+# 編輯器
+.vscode/
+.idea/
+
+# 作業系統
+.DS_Store
+Thumbs.db
+desktop.ini

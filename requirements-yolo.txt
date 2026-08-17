@@ -1,0 +1,18 @@
+# 訓練環境（conda create -n lidc-yolo python=3.10）
+#
+# 重要：PyPI 上的 torch 是 CPU 版。直接 pip install ultralytics 會
+# 連帶安裝 CPU 版 PyTorch，導致 torch.cuda.is_available() 為 False。
+# 須先從 PyTorch 官方來源安裝 CUDA 版，再安裝 ultralytics：
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+#   pip install -r requirements-yolo.txt
+#
+# CUDA 版本依顯示卡驅動而定，以 nvidia-smi 確認。
+# 驅動較舊者改用 cu126。安裝後應以下列指令驗證：
+#
+#   python -c "import torch; print(torch.cuda.is_available())"
+
+ultralytics
+numpy
+opencv-python
+pandas

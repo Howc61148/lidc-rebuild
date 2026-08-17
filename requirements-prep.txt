@@ -1,0 +1,16 @@
+# 前處理環境（conda create -n lidc-prep python=3.10）
+#
+# pylidc 已數年未更新，與較新版本的相依套件不相容，
+# 以下三項須鎖定版本：
+
+numpy<1.24        # 1.24 移除 np.int，pylidc 內部仍在使用
+sqlalchemy<2.0    # 2.0 變更了 pylidc 使用的 Query API
+setuptools<81     # 81 之後移除 pkg_resources，pylidc 於 import 時需要
+
+pylidc
+pydicom
+opencv-python
+pandas
+scikit-image
+matplotlib
+tqdm
