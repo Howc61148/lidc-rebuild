@@ -25,13 +25,27 @@ MIN_HIT_RADIUS = 5.0     # 命中判定的最小半徑，避免極小結節難�
 SEED = 42
 
 
+def parse_stem(stem):
+    """檔名格式 patient_sSCANID_ZZZZ，回傳 (scan_key, z)。
+
+    以掃描而非病人為 key：同一病人的多次掃描其切片編號各自獨立，
+    混在一起會使 3D 聚合誤將不同掃描的框合併。
+    """
+    parts = stem.rsplit("_", 2)
+    if len(parts) == 3 and parts[1].startswith("s"):
+        return f"{parts[0]}_{parts[1]}", int(parts[2])
+    # 相容舊格式 patient_ZZZZ
+    pid, z = stem.rsplit("_", 1)
+    return pid, int(z)
+
+
 def load_ground_truth(data_dir, filenames):
-    """讀取標註檔並聚合為 3D 結節，回傳 {patient_id: [nodule, ...]}。"""
-    per_patient = defaultdict(list)
+    """讀取標註檔並聚合為 3D 結節，回傳 {scan_key: [nodule, ...]}。"""
+    per_scan = defaultdict(list)
 
     for fn in filenames:
         stem = fn.replace(".png", "")
-        pid, z = stem.rsplit("_", 1)
+        key, z = parse_stem(stem)
         lbl = os.path.join(data_dir, "labels", stem + ".txt")
         if not os.path.exists(lbl):
             continue
@@ -41,9 +55,9 @@ def load_ground_truth(data_dir, filenames):
                 if len(parts) != 5:
                     continue
                 _, cx, cy, w, h = map(float, parts)
-                per_patient[pid].append((int(z), cx, cy, w, h))
+                per_scan[key].append((z, cx, cy, w, h))
 
-    return {pid: cluster_3d(boxes) for pid, boxes in per_patient.items()}
+    return {k: cluster_3d(boxes) for k, boxes in per_scan.items()}
 
 
 def cluster_3d(boxes):
@@ -135,22 +149,24 @@ def cpm_from_curve(curve):
 def bootstrap_ci(per_patient, n_boot=1000, target_fp=2.0, seed=SEED):
     """以病人為單位有放回重抽，估計召回率的 95% 信賴區間。
 
-    不以結節為單位：同一病人的結節共用掃描儀、重建參數與該病人的
+    不以結節或掃描為單位：同一病人的結節共用掃描儀、重建參數與該病人的
     解剖特徵，彼此相關。當成獨立樣本會高估有效樣本數，使區間過窄。
     """
     rng = np.random.default_rng(seed)
     pids = list(per_patient)
+    n_scans_total = sum(d["n_scans"] for d in per_patient.values())
     vals = []
     for _ in range(n_boot):
         pick = rng.choice(len(pids), size=len(pids), replace=True)
-        recs, gt = [], 0
+        recs, gt, scans = [], 0, 0
         for i in pick:
             d = per_patient[pids[i]]
             recs += d["records"]
             gt += d["n_gt"]
-        if gt == 0:
+            scans += d["n_scans"]
+        if gt == 0 or scans == 0:
             continue
-        vals.append(sens_at(froc(recs, len(pids), gt), target_fp))
+        vals.append(sens_at(froc(recs, scans, gt), target_fp))
     if not vals:
         return None
     return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
@@ -185,7 +201,8 @@ def main():
     print(f"載入標準答案（{len(filenames)} 張影像）...")
     gt = load_ground_truth(args.data, filenames)
     total_gt = sum(len(v) for v in gt.values())
-    print(f"  {len(gt)} 位病人，3D 聚合後共 {total_gt} 顆結節\n")
+    print(f"  {len(gt)} 次掃描（{len({k.split('_s')[0] for k in gt})} 位病人），"
+          f"3D 聚合後共 {total_gt} 顆結節\n")
 
     print("執行推論...")
     model = YOLO(args.weights)
@@ -195,34 +212,42 @@ def main():
         for path, res in zip(batch, model.predict(batch, conf=args.conf,
                                                   verbose=False)):
             stem = os.path.basename(path).replace(".png", "")
-            pid, z = stem.rsplit("_", 1)
+            key, z = parse_stem(stem)
             for b in res.boxes:
                 x1, y1, x2, y2 = b.xyxyn[0].tolist()
-                raw[pid].append((int(z), (x1 + x2) / 2, (y1 + y2) / 2,
+                raw[key].append((z, (x1 + x2) / 2, (y1 + y2) / 2,
                                  x2 - x1, y2 - y1, float(b.conf[0])))
 
     print("3D 聚合並匹配...")
-    per_patient, all_records = {}, []
-    for pid in gt:
-        preds = cluster_3d([r[:5] for r in raw.get(pid, [])])
+    per_patient, all_records = defaultdict(
+        lambda: {"records": [], "n_gt": 0, "n_scans": 0}), []
+    for key in gt:
+        preds = cluster_3d([r[:5] for r in raw.get(key, [])])
 
         # 聚合後的結節取其各切片中的最高信心分數
         scores = defaultdict(float)
-        for z, cx, cy, w, h, s in raw.get(pid, []):
-            key = (round(cx, 4), round(cy, 4))
-            scores[key] = max(scores[key], s)
+        for z, cx, cy, w, h, s in raw.get(key, []):
+            k = (round(cx, 4), round(cy, 4))
+            scores[k] = max(scores[k], s)
         for nod in preds:
             nod["score"] = max(
                 scores.get((round(nod["slices"][z][0], 4),
                             round(nod["slices"][z][1], 4)), 0.0)
                 for z in nod["slices"])
 
-        is_tp, _ = match(preds, gt[pid])
+        is_tp, _ = match(preds, gt[key])
         recs = [{"score": p["score"], "is_tp": t}
                 for p, t in zip(sorted(preds, key=lambda n: -n["score"]), is_tp)]
-        per_patient[pid] = {"records": recs, "n_gt": len(gt[pid])}
+
+        # 匹配以掃描為單位，但統計以病人為單位彙整：
+        # 同一病人的多次掃描不是獨立樣本
+        pid = key.split("_s")[0]
+        per_patient[pid]["records"] += recs
+        per_patient[pid]["n_gt"] += len(gt[key])
+        per_patient[pid]["n_scans"] += 1
         all_records += recs
 
+    per_patient = dict(per_patient)
     n_scans = len(gt)
     curve = froc(all_records, n_scans, total_gt)
     cpm, sens_list = cpm_from_curve(curve)
@@ -231,7 +256,8 @@ def main():
     print("\n" + "=" * 60)
     print(f"病灶層級評估（{args.split} 集）")
     print("=" * 60)
-    print(f"病人數 {n_scans}   結節數 {total_gt}   偵測數 {len(all_records)}\n")
+    print(f"掃描數 {n_scans}   病人數 {len(per_patient)}   "
+          f"結節數 {total_gt}   偵測數 {len(all_records)}\n")
     print("FROC — 各假陽性率下的召回率：")
     for pt, s in zip(CPM_POINTS, sens_list):
         print(f"  {pt:>6.3f} FP/scan : {s:.3f}")
@@ -257,7 +283,8 @@ def main():
     with open(out, "w") as f:
         json.dump({
             "split": args.split, "weights": args.weights,
-            "n_patients": n_scans, "n_nodules": total_gt,
+            "n_scans": n_scans, "n_patients": len(per_patient),
+            "n_nodules": total_gt,
             "cpm": cpm,
             "froc": dict(zip(map(str, CPM_POINTS), sens_list)),
             "recall_at_2fp": r2,

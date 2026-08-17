@@ -77,7 +77,7 @@ def analyse_scan(scan):
         malig = float(np.median([a.malignancy for a in anns]))
         diam = float(np.median([a.diameter for a in anns]))
 
-        row = dict(patient_id=scan.patient_id, nodule_idx=nid,
+        row = dict(patient_id=scan.patient_id, scan_id=scan.id, nodule_idx=nid,
                    n_readers=n_readers, malignancy_median=malig,
                    diameter_median_mm=round(diam, 2),
                    n_slices=len(n_slices))
@@ -137,7 +137,10 @@ def process_scan(scan, img_dir, lbl_dir, rng):
 
     rows = []
     for k in pos + neg:
-        name = f"{scan.patient_id}_{k:04d}"
+        # 檔名須含 scan.id：同一位病人可能有多次掃描，
+        # 僅以 patient_id + 切片編號命名會使後者覆蓋前者，
+        # 造成該病人的切片序列混合不同掃描，破壞 3D 聚合的前提
+        name = f"{scan.patient_id}_s{scan.id}_{k:04d}"
         cv2.imwrite(os.path.join(img_dir, name + ".png"), img[:, :, k])
 
         boxes = slice_boxes.get(k, []) if k in pos else []
@@ -147,7 +150,8 @@ def process_scan(scan, img_dir, lbl_dir, rng):
                         f"{(x2 - x1) / w:.6f} {(y2 - y1) / h:.6f}\n")
 
         rows.append(dict(
-            patient_id=scan.patient_id, slice_idx=k, filename=name + ".png",
+            patient_id=scan.patient_id, scan_id=scan.id, slice_idx=k,
+            filename=name + ".png",
             n_boxes=len(boxes), is_positive=int(k in pos),
             slice_thickness=scan.slice_thickness,
             pixel_spacing=scan.pixel_spacing,
