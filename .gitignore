@@ -1,4 +1,4 @@
-# 資料集與前處理輸出（LIDC-IDRI 使用條款不允許再散布，且體積過大）
+# 原始影像與大量衍生資料不納入此程式碼庫；不在此註解判定資料授權
 *.dcm
 *.png
 *.jpg
@@ -31,3 +31,12 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local backups and one-off patch files
+*.bak
+/lidc_scoring_fix/
+/patch_evaluation_edges.py
+
+# Keep root originals locally; publish copies under reports/
+/audit_eval_test.json
+/eval_test_full_scoring_fixed.json

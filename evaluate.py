@@ -76,56 +76,62 @@ def to_mm(center_px, ps, ss):
 
 
 def match_scan(preds, scan_gt):
-    """對單次掃描的候選分類為 TP / FP / 忽略 / 重複。
+    """Classify candidates using the project's positive-reference-first rule.
 
-    依信心由高至低處理每個候選：
-      - 落在任一忽略區結節半徑內 → 忽略（不計分）
-      - 落在評估結節半徑內且該結節尚未命中 → TP
-      - 落在已命中結節半徑內 → 重複，不計為 FP（同 LUNA16）
-      - 其餘 → FP
+    Preserve the existing nearest-included-target assignment, strict radius
+    boundary, coordinate conversion, and duplicate suppression. A candidate
+    is ignored only if it matches no included target. n_ign counts CANDIDATES,
+    not unique ignored nodules. This is not a full LUNA16 implementation.
     """
     ps, ss = scan_gt["pixel_spacing_mm"], scan_gt["slice_spacing_mm"]
     targets = [(to_mm(n["center_px"], ps, ss), n["diameter_mm"] / 2, n["id"])
                for n in scan_gt["nodules"] if n["status"] == "included"]
     ignores = [(to_mm(n["center_px"], ps, ss), n["diameter_mm"] / 2)
                for n in scan_gt["nodules"] if n["status"] == "ignore"]
-
     hit = set()
     records, n_ign, n_dup = [], 0, 0
 
     for c in sorted(preds, key=lambda c: -c["score"]):
         p = to_mm(c["center_px"], ps, ss)
 
-        if any(np.linalg.norm(p - ic) < ir for ic, ir in ignores):
-            n_ign += 1
-            continue
-
+        # Included targets take precedence over overlapping ignore regions.
         best = None
         for tc, tr, tid in targets:
             d = np.linalg.norm(p - tc)
             if d < tr and (best is None or d < best[0]):
                 best = (d, tid)
-
-        if best is None:
-            records.append((c["score"], False))
-        elif best[1] in hit:
-            n_dup += 1
+        if best is not None:
+            if best[1] in hit:
+                n_dup += 1
+            else:
+                hit.add(best[1])
+                records.append((c["score"], True))
+        elif any(np.linalg.norm(p - ic) < ir for ic, ir in ignores):
+            n_ign += 1
         else:
-            hit.add(best[1])
-            records.append((c["score"], True))
+            records.append((c["score"], False))
 
     return records, len(targets), n_ign, n_dup
 
 
 def froc(records, n_scans, n_gt):
-    """由高至低掃過信心門檻，回傳 [(FP/scan, 召回率), ...]。"""
+    """Emit one curve point per DISTINCT score threshold.
+
+    All candidates with exactly equal scores enter together. Retain the
+    existing sens_at() stepwise convention; do not add interpolation or round
+    scores. As in the previous implementation, no initial origin is emitted.
+    """
     tp = fp = 0
     curve = []
-    for s, is_tp in sorted(records, key=lambda r: -r[0]):
+    ordered = sorted(records, key=lambda r: -r[0])
+    for i, (score, is_tp) in enumerate(ordered):
         if is_tp:
             tp += 1
         else:
             fp += 1
+        # A single threshold cannot select only some candidates with this score.
+        if i + 1 < len(ordered) and ordered[i + 1][0] == score:
+            continue
         curve.append((fp / n_scans, tp / n_gt))
     return curve
 
